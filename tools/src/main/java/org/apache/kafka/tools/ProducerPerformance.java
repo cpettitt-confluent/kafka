@@ -63,12 +63,18 @@ public class ProducerPerformance {
             boolean shouldPrintMetrics = res.getBoolean("printMetrics");
             long transactionDurationMs = res.getLong("transactionDurationMs");
             boolean transactionsEnabled =  0 < transactionDurationMs;
+            long flushDurationMs = res.getLong("flushDurationMs");
+            boolean flushEnabled = 0 < flushDurationMs;
 
             // since default value gets printed with the help text, we are escaping \n there and replacing it with correct value here.
             String payloadDelimiter = res.getString("payloadDelimiter").equals("\\n") ? "\n" : res.getString("payloadDelimiter");
 
             if (producerProps == null && producerConfig == null) {
                 throw new ArgumentParserException("Either --producer-props or --producer.config must be specified.", parser);
+            }
+
+            if (transactionsEnabled && flushEnabled) {
+                throw new ArgumentParserException("Only one of --flush-duration-ms or --transaction-duration-ms may be set at the same time.", parser);
             }
 
             List<byte[]> payloadByteList = new ArrayList<>();
@@ -126,6 +132,7 @@ public class ProducerPerformance {
 
             int currentTransactionSize = 0;
             long transactionStartTime = 0;
+            long lastFlushTime = 0;
             for (long i = 0; i < numRecords; i++) {
                 if (transactionsEnabled && currentTransactionSize == 0) {
                     producer.beginTransaction();
@@ -148,13 +155,23 @@ public class ProducerPerformance {
                     currentTransactionSize = 0;
                 }
 
+                if (flushEnabled && flushDurationMs <= (sendStartMs - lastFlushTime)) {
+                    producer.flush();
+                    lastFlushTime = System.currentTimeMillis();
+                }
+
                 if (throttler.shouldThrottle(i, sendStartMs)) {
                     throttler.throttle();
                 }
             }
 
-            if (transactionsEnabled && currentTransactionSize != 0)
+            if (transactionsEnabled && currentTransactionSize != 0) {
                 producer.commitTransaction();
+            }
+
+            if (flushEnabled) {
+                producer.flush();
+            }
 
             if (!shouldPrintMetrics) {
                 producer.close();
@@ -283,13 +300,22 @@ public class ProducerPerformance {
                .help("The transactionalId to use if transaction-duration-ms is > 0. Useful when testing the performance of concurrent transactions.");
 
         parser.addArgument("--transaction-duration-ms")
-               .action(store())
-               .required(false)
-               .type(Long.class)
-               .metavar("TRANSACTION-DURATION")
-               .dest("transactionDurationMs")
-               .setDefault(0L)
-               .help("The max age of each transaction. The commitTransaction will be called after this time has elapsed. Transactions are only enabled if this value is positive.");
+            .action(store())
+            .required(false)
+            .type(Long.class)
+            .metavar("TRANSACTION-DURATION")
+            .dest("transactionDurationMs")
+            .setDefault(0L)
+            .help("The max age of each transaction. The commitTransaction will be called after this time has elapsed. Transactions are only enabled if this value is positive.");
+
+        parser.addArgument("--flush-duration-ms")
+            .action(store())
+            .required(false)
+            .type(Long.class)
+            .metavar("FLUSH-DURATION")
+            .dest("flushDurationMs")
+            .setDefault(0L)
+            .help("When configured, the amount of time to elapse before making a producer.flush() call. Explicit flush is only enabled if this value is positive.");
 
 
         return parser;
